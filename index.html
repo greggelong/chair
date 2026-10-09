@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Recursive Study — Chair</title>
+<style>
+  :root {
+    --ink:     #111111;
+    --muted:   #9a9a9a;
+    --paper:   #ffffff;
+    --pad:     clamp(20px, 3.6vw, 58px);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    user-select: none;
+  }
+
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: block;
+  }
+
+  /* ---------- gallery wall label ---------- */
+  .ui {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    animation: settle 1.8s cubic-bezier(.2,.7,.2,1) both;
+    animation-delay: .35s;
+  }
+
+  @keyframes settle {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  .ui > * { position: absolute; }
+
+  .tl { top: var(--pad);    left: var(--pad); }
+  .tr { top: var(--pad);    right: var(--pad); text-align: right; }
+  .bl { bottom: var(--pad); left: var(--pad); }
+  .br { bottom: var(--pad); right: var(--pad); text-align: right; }
+
+  .eyebrow {
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: .34em;
+    text-transform: uppercase;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  .sub {
+    margin-top: .55em;
+    font-size: 10px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .value {
+    margin-top: .55em;
+    font-size: 12px;
+    letter-spacing: .26em;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+
+  /* ---------- the number ---------- */
+  .count {
+    font-family: Georgia, "Times New Roman", serif;
+    font-weight: 400;
+    font-size: clamp(46px, 7.6vw, 108px);
+    line-height: .88;
+    letter-spacing: -.015em;
+    color: var(--ink);
+    margin-bottom: .22em;
+  }
+
+  .binary {
+    margin-top: .8em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: .34em;
+    color: var(--muted);
+  }
+
+  @media (max-width: 640px) {
+    .eyebrow { font-size: 9px; letter-spacing: .26em; }
+    .sub     { font-size: 9px; letter-spacing: .14em; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<div class="ui">
+  <div class="tl">
+    <div class="eyebrow">Recursive Study</div>
+    <div class="sub">Chair &nbsp;·&nbsp;</div>
+  </div>
+
+  <div class="tr">
+    <div class="eyebrow">Level</div>
+    <div class="value" id="level">00 / 05</div>
+  </div>
+
+  <div class="bl">
+    <div class="eyebrow">Beijing Hard-working Chair</div>
+    <div class="sub" id="formula">Σ 4ⁿ, n = 0…5</div>
+  </div>
+
+  <div class="br">
+    <div class="count" id="count">0</div>
+    <div class="eyebrow">Chairs</div>
+    <div class="binary" id="binary">0</div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ==================================================================
+     chair.png — a recursive study
+     Drop chair.png next to this file and open the page.
+
+     Each chair spawns children at half its size, offset by SPREAD times
+     the parent's height. With BRANCHING = 4 it spawns four (left,
+     right, up, down), so the fractal grows vertically and horizontally.
+     ================================================================== */
+
+  const canvas = document.getElementById('stage');
+  const ctx    = canvas.getContext('2d');
+
+  const elCount   = document.getElementById('count');
+  const elBinary  = document.getElementById('binary');
+  const elLevel   = document.getElementById('level');
+  const elFormula = document.getElementById('formula');
+
+  /* ---------- structure -------------------------------------------
+     BRANCHING = 2 → left + right only (the original)
+     BRANCHING = 4 → left + right + up + down                       */
+  const BRANCHING = 2;
+
+  const MAX_DEPTH = BRANCHING === 4 ? 5 : 6;
+  //       4-way: 1 + 4 + 16 + 64 + 256 + 1024 = 1365 chairs
+  //       2-way: 1 + 2 + 4  + 8  + 16 + 32 + 64 = 127 chairs
+
+  const SPREAD_H = 0.92;   // horizontal offset as a fraction of parent height
+  const SPREAD_V = 0.78;   // vertical offset (only used when BRANCHING = 4)
+
+  /* ---------- opacity ramp ----------------------------------------
+     Depth 0 (the big chair) is fully opaque; each generation back
+     loses DEPTH_FADE. 0 gives a flat, uniform look.                  */
+  const DEPTH_FADE = 0;
+
+  /* ---------- timeline (seconds) ---------------------------------- */
+  const T_LEVEL    = 0.42;
+  const T_NODE     = 0.70;
+  const T_HOLD     = 2.20;
+  const T_COLLAPSE = 2.40;
+  const T_PAUSE    = 0.70;
+
+  const GROW_END   = MAX_DEPTH * T_LEVEL + T_NODE;
+  const HOLD_END   = GROW_END + T_HOLD;
+  const C_STAGGER  = (T_COLLAPSE - T_NODE) / MAX_DEPTH;
+  const CYCLE      = HOLD_END + T_COLLAPSE + T_PAUSE;
+
+  /* ---------- the image --------------------------------------------
+     The png is pre-processed once into an offscreen canvas whose alpha
+     channel carries the chair. That lets us draw with plain source-over
+     and a real per-node alpha, instead of relying on multiply — which
+     was stacking the small chairs into a darker mass than the big one. */
+  const chairImg = new Image();
+  let chairSprite = null;
+  let spriteClean = false;
+  let useImage    = false;
+
+  chairImg.onload  = () => {
+    chairSprite = makeSprite(chairImg);
+    useImage    = true;
+    resize();
+  };
+  chairImg.onerror = () => { useImage = false; resize(); };
+  chairImg.src = 'chair.png';
+
+  function makeSprite(img) {
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h) return null;
+
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+
+    let data;
+    try {
+      data = g.getImageData(0, 0, w, h);
+    } catch (err) {
+      spriteClean = false;
+      return c;
+    }
+
+    const px = data.data;
+
+    let hasAlpha = false;
+    for (let i = 3; i < px.length; i += 4) {
+      if (px[i] < 250) { hasAlpha = true; break; }
+    }
+
+    if (!hasAlpha) {
+      for (let i = 0; i < px.length; i += 4) {
+        const lum = (px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114) / 255;
+        let a = 1 - lum;
+        a = a * a * (3 - 2 * a);       // smoothstep: soft greys → more solid
+        a = Math.min(1, a * 1.4);
+        px[i + 3] = Math.round(a * 255);
+      }
+      g.putImageData(data, 0, 0);
+    }
+
+    spriteClean = true;
+    return c;
+  }
+
+  const FALLBACK_ASPECT = 0.62;
+
+  function aspect() {
+    if (useImage && chairImg.naturalHeight) {
+      return chairImg.naturalWidth / chairImg.naturalHeight;
+    }
+    return FALLBACK_ASPECT;
+  }
+
+  /* ---------- layout ---------------------------------------------- */
+  let W = 0, H = 0, DPR = 1;
+  let nodes = [];
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+
+    canvas.width  = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
+    buildNodes();
+  }
+
+  function buildNodes() {
+    const a = aspect();
+
+    // sum of 2·S·(1/2 + 1/4 + … + 1/2^depth) on one side
+    const geom = 2 * (1 - Math.pow(0.5, MAX_DEPTH));
+    const sumH = SPREAD_H * geom;
+    const sumV = (BRANCHING === 4) ? SPREAD_V * geom : 0;
+
+    // bounding box of the finished fractal, in units of the base height
+    const spanW = 2 * sumH + a;
+    const spanH = 2 * sumV + 1;
+
+    const baseH = Math.min((W * 0.86) / spanW, (H * 0.86) / spanH);
+    const rootY = H * 0.5;
+
+    nodes = [];
+    let order = 0;
+
+    (function recurse(x, y, h, depth) {
+      nodes.push({
+        x, y,
+        w: h * a,
+        h,
+        depth,
+        order:      order++,
+        growStart:  depth * T_LEVEL,
+        fadeStart:  HOLD_END + (MAX_DEPTH - depth) * C_STAGGER
+      });
+
+      if (depth === MAX_DEPTH) return;
+
+      const childH = h * 0.5;
+      const dxH    = h * SPREAD_H;
+      const dxV    = h * SPREAD_V;
+
+      // horizontal children
+      recurse(x - dxH, y, childH, depth + 1);
+      recurse(x + dxH, y, childH, depth + 1);
+
+      // vertical children
+      if (BRANCHING === 4) {
+        recurse(x, y - dxV, childH, depth + 1);
+        recurse(x, y + dxV, childH, depth + 1);
+      }
+    })(W / 2, rootY, baseH, 0);
+  }
+
+  /* ---------- animation maths -------------------------------------- */
+  const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+
+  function revealOf(n, t) {
+    if (t < n.fadeStart) {
+      return clamp01((t - n.growStart) / T_NODE);
+    }
+    return 1 - clamp01((t - n.fadeStart) / T_NODE);
+  }
+
+  /* ---------- drawing ---------------------------------------------- */
+  function drawScene(t) {
+    // opaque white ground
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, W, H);
+
+    // if the png couldn't be cleaned (tainted canvas) fall back to multiply
+    const mode = (useImage && !spriteClean) ? 'multiply' : 'source-over';
+    ctx.globalCompositeOperation = mode;
+
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      const raw = revealOf(n, t);
+      if (raw <= 0.002) continue;
+
+      const e     = raw * raw * (3 - 2 * raw);
+      const scale = 0.82 + 0.18 * e;
+      const alpha = clamp01(e * (1 - n.depth * DEPTH_FADE));
+
+      // one transform, one draw — no save / restore per node
+      const s = scale * DPR;
+      ctx.setTransform(s, 0, 0, s, DPR * n.x, DPR * n.y);
+      ctx.globalAlpha = alpha;
+
+      if (useImage && chairSprite) {
+        ctx.drawImage(chairSprite, -n.w / 2, -n.h / 2, n.w, n.h);
+      } else {
+        drawVectorChair(n.w, n.h);
+      }
+    }
+
+    // reset for any subsequent drawing
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---------- fallback chair, if chair.png is missing --------------- */
+  function drawVectorChair(w, h) {
+    const x = -w / 2, y = -h / 2;
+
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth   = Math.max(0.4, w * 0.05);
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
+
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.20, y + h * 0.05);
+    ctx.lineTo(x + w * 0.20, y + h * 0.52);
+    ctx.moveTo(x + w * 0.80, y + h * 0.05);
+    ctx.lineTo(x + w * 0.80, y + h * 0.52);
+    ctx.moveTo(x + w * 0.20, y + h * 0.16);
+    ctx.lineTo(x + w * 0.80, y + h * 0.16);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.10, y + h * 0.52);
+    ctx.lineTo(x + w * 0.90, y + h * 0.52);
+    ctx.lineTo(x + w * 0.90, y + h * 0.61);
+    ctx.lineTo(x + w * 0.10, y + h * 0.61);
+    ctx.closePath();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.15, y + h * 0.61);
+    ctx.lineTo(x + w * 0.19, y + h * 0.96);
+    ctx.moveTo(x + w * 0.85, y + h * 0.61);
+    ctx.lineTo(x + w * 0.81, y + h * 0.96);
+    ctx.stroke();
+  }
+
+  /* ---------- the wall label --------------------------------------- */
+  const prev = { count: -1, level: -1 };
+
+  function updateOverlay(t) {
+    let count = 0;
+    let level = 0;
+
+    for (let i = 0; i < nodes.length; i++) {
+      const n = nodes[i];
+      if (revealOf(n, t) > 0.5) {
+        count++;
+        if (n.depth > level) level = n.depth;
+      }
+    }
+
+    if (count !== prev.count) {
+      prev.count = count;
+      elCount.textContent  = String(count);
+      // in base 4 (or base 2) the cumulative count is all 1s: 1, 11, 111 …
+      elBinary.textContent = count.toString(BRANCHING);
+    }
+
+    if (level !== prev.level) {
+      prev.level = level;
+      elLevel.textContent =
+        String(level).padStart(2, '0') + ' / ' + String(MAX_DEPTH).padStart(2, '0');
+    }
+  }
+
+  /* ---------- one-off label tweak ---------------------------------- */
+  elFormula.textContent =
+    'Canvas 2D \u00A0\u00B7\u00A0 \u03A3 ' + BRANCHING + '\u207F, n = 0\u2026' + MAX_DEPTH;
+
+  /* ---------- loop -------------------------------------------------- */
+  const start = performance.now() + 320;
+
+  function frame(now) {
+    let t = (now - start) / 1000;
+    if (t < 0) t = 0;
+    t %= CYCLE;
+
+    drawScene(t);
+    updateOverlay(t);
+
+    requestAnimationFrame(frame);
+  }
+
+  window.addEventListener('resize', resize);
+
+  resize();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
